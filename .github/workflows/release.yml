@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  build-release:
+  build:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -77,9 +77,28 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: "${{ matrix.asset_name }}${{ matrix.ext }}"
 
-      # Tag + release are created once from the Linux matrix entry to avoid duplicates
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -E '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create git tag
-        if: matrix.asset_name == 'certy-linux-x64'
         shell: bash
         run: |
           TAG="v${{ steps.version.outputs.version }}"
@@ -93,15 +112,7 @@ jobs:
             echo "Tag $TAG already exists"
           fi
 
-      - name: Download all build artifacts
-        if: matrix.asset_name == 'certy-linux-x64'
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
       - name: Create GitHub Release
-        if: matrix.asset_name == 'certy-linux-x64'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
