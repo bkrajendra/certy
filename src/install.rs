@@ -2,6 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[allow(unused_imports)]
+use sha1::{Digest as _, Sha1};
+#[allow(unused_imports)]
+use sha2::{Digest as _, Sha256};
+
 /// Operating system families supported by the tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsFamily {
@@ -29,6 +34,7 @@ pub fn binary_dir() -> std::io::Result<PathBuf> {
 }
 
 /// Locate the certificate file: explicit path or `ca-cert.pem` next to the binary.
+#[allow(dead_code)]
 pub fn locate_cert(cert: Option<PathBuf>) -> std::io::Result<PathBuf> {
     match cert {
         Some(p) => Ok(p),
@@ -64,6 +70,112 @@ pub fn pem_to_der(data: &[u8]) -> std::io::Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Compute the SHA-1 hex fingerprint of raw DER certificate bytes.
+fn sha1_hex(data: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Compute the SHA-256 hex fingerprint of raw certificate bytes.
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Check whether the certificate is already registered in the system trust store.
+pub fn is_cert_already_trusted(cert: &Path, os: &OsFamily) -> std::io::Result<bool> {
+    let data = match fs::read(cert) {
+        Ok(d) => d,
+        Err(_) => return Ok(false),
+    };
+
+    match os {
+        OsFamily::Windows => {
+            let der = if is_pem_cert(&data) {
+                pem_to_der(&data)?
+            } else {
+                data
+            };
+            let fingerprint = sha1_hex(&der);
+
+            match Command::new("certutil.exe").args(["-store", "ROOT"]).output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    Ok(stdout.contains(&fingerprint))
+                }
+                Err(_) => Ok(false),
+            }
+        }
+        OsFamily::MacOS => {
+            let fingerprint = sha256_hex(&data);
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let system_kc = "/Library/Keychains/System.keychain".to_string();
+            let login_kc = format!("{}/Library/Keychains/login.keychain-db", home);
+            let keychains: Vec<String> = vec![system_kc, login_kc];
+
+            for kc in &keychains {
+                if !Path::new(kc).exists() {
+                    continue;
+                }
+                match Command::new("security")
+                    .args(["find-certificate", "-Z", "-k", kc])
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        if stdout.contains(&fingerprint) {
+                            return Ok(true);
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+            Ok(false)
+        }
+        OsFamily::Linux => {
+            let id = distro_id();
+            let anchor_dirs: Vec<&str> = match id.as_str() {
+                "ubuntu" | "debian" | "raspbian" | "linuxmint" | "pop" | "neon" | "kali" => {
+                    vec!["/usr/local/share/ca-certificates"]
+                }
+                "rhel" | "centos" | "fedora" | "rocky" | "almalinux" | "alma" | "opensuse"
+                | "opensuse-leap" | "opensuse-tumbleweed" | "sles" | "ol" => {
+                    vec!["/etc/pki/ca-trust/source/anchors"]
+                }
+                "arch" | "manjaro" | "endeavouros" | "garuda" => {
+                    vec!["/usr/share/ca-certificates/trust-source/anchors"]
+                }
+                _ => vec![
+                    "/usr/local/share/ca-certificates",
+                    "/etc/pki/ca-trust/source/anchors",
+                    "/usr/share/ca-certificates/trust-source/anchors",
+                ],
+            };
+
+            // If our installed copy already exists in an anchor directory, it is trusted.
+            for dir in &anchor_dirs {
+                let target = Path::new(dir).join("certy-ca-cert.crt");
+                if target.exists() {
+                    return Ok(true);
+                }
+            }
+
+            // Also check the system trust list for our certificate's fingerprint.
+            let fingerprint = sha256_hex(&data);
+            if let Ok(output) = Command::new("trust").args(["list", "--filter=certificates"]).output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.contains(&fingerprint) {
+                    return Ok(true);
+                }
+            }
+
+            Ok(false)
+        }
+    }
 }
 
 /// Returns true when the process runs with administrative/root privileges.

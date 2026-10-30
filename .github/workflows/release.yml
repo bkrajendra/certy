@@ -45,6 +45,7 @@ jobs:
 
       - name: Extract version from Cargo.toml
         id: version
+        shell: bash
         run: |
           VERSION=$(grep -E '^version' Cargo.toml | head -1 | cut -d'"' -f2)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -65,6 +66,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Stage artifact
+        shell: bash
         run: |
           EXT="${{ matrix.ext }}"
           cp "target/${{ matrix.target }}/release/certy$EXT" "certy${{ matrix.ext }}"
@@ -78,6 +80,7 @@ jobs:
       # Tag + release are created once from the Linux matrix entry to avoid duplicates
       - name: Create git tag
         if: matrix.asset_name == 'certy-linux-x64'
+        shell: bash
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"

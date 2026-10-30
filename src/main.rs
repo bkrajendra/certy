@@ -2,14 +2,17 @@ use clap::Parser;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 mod install;
 mod logger;
 
-use install::{detect_os, has_elevated_privileges, install_certificate, locate_cert, verify_install, OsFamily};
+use install::{
+    detect_os, has_elevated_privileges, install_certificate, is_cert_already_trusted,
+    verify_install, OsFamily,
+};
 use logger::{log, banner, Level};
 
 #[derive(Parser, Debug)]
@@ -50,6 +53,54 @@ fn confirm(prompt: &str) -> io::Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
+/// Prompt the user to enter a file path.
+fn prompt_path(prompt: &str) -> io::Result<PathBuf> {
+    print!("{} {}: ", "?".yellow().bold(), prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(PathBuf::from(input.trim()))
+}
+
+/// Resolve the certificate path: explicit --cert, default next to binary,
+/// or interactively ask the user for a path.
+fn resolve_cert_path(args_cert: Option<PathBuf>) -> io::Result<PathBuf> {
+    if let Some(p) = args_cert {
+        return Ok(p);
+    }
+
+    // Default: ca-cert.pem next to the binary
+    let default = install::binary_dir()?.join("ca-cert.pem");
+    if default.exists() {
+        return Ok(default);
+    }
+
+    // Fallback: ca-cert.pem in current working directory
+    let cwd_default = std::env::current_dir().unwrap_or_default().join("ca-cert.pem");
+    if cwd_default.exists() {
+        return Ok(cwd_default);
+    }
+
+    // Not found — ask the user, unless running non-interactively (CI / automated testing).
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "ca-cert.pem not found next to the binary or in the current directory, \
+             and stdin is not a TTY (non-interactive). Place ca-cert.pem next to the binary \
+             or pass --cert /path/to/ca-cert.pem.",
+        ));
+    }
+    log(Level::Warn, "ca-cert.pem not found next to the binary or in the current directory.");
+    loop {
+        let path = prompt_path("Enter path to CA certificate PEM file")?;
+        if path.exists() {
+            return Ok(path);
+        }
+        log(Level::Error, &format!("File not found: {}", path.display()));
+        log(Level::Info, "Please enter a valid path, or press Ctrl+C to abort.");
+    }
+}
+
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
@@ -68,7 +119,7 @@ fn main() -> io::Result<()> {
 
     // ───── 2. Locate the certificate ─────
     let pb = spinner("Locating certificate file…");
-    let cert_path = match locate_cert(args.cert.clone()) {
+    let cert_path = match resolve_cert_path(args.cert.clone()) {
         Ok(p) => p,
         Err(e) => {
             log(Level::Error, &format!("Could not resolve certificate path: {}", e));
@@ -117,7 +168,24 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    // ───── 4. Privilege check ─────
+    // ───── 4. Check if already trusted ─────
+    let pb = spinner("Checking if certificate is already trusted…");
+    let already_trusted = is_cert_already_trusted(&cert_path, &os)?;
+    pb.finish_and_clear();
+
+    if already_trusted {
+        log(Level::Info, "Certificate is already registered in the system trust store.");
+        if args.yes {
+            log(Level::Info, "Nothing to do. Exiting.");
+            return Ok(());
+        }
+        if !confirm("Re-import anyway?")? {
+            log(Level::Info, "Skipped by user.");
+            return Ok(());
+        }
+    }
+
+    // ───── 5. Privilege check ─────
     let pb = spinner("Checking privileges…");
     let elevated = has_elevated_privileges();
     pb.finish_and_clear();
@@ -136,7 +204,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // ───── 5. Confirmation ─────
+    // ───── 6. Confirmation ─────
     if !args.yes {
         if !confirm(&format!(
             "Import {} into the system trust store?",
@@ -147,7 +215,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // ───── 6. Import ─────
+    // ───── 7. Import ─────
     let pb = spinner("Importing certificate into the trust store…");
     match install_certificate(&cert_path, &os, args.force) {
         Ok(()) => {
@@ -175,7 +243,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // ───── 7. Verify ─────
+    // ───── 8. Verify ─────
     let pb = spinner("Verifying installation…");
     match verify_install(&cert_path, &os) {
         Ok(true) => {
