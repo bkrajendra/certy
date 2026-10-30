@@ -27,6 +27,7 @@ pub fn banner() {
     println!("║ {:^54} ║", "Custom Root CA Importer".cyan().bold());
     println!("║ {:^54} ║", "System trust store installer".white());
     println!("║ {:^54} ║", "Windows · Linux · macOS".white().dimmed());
+    println!("║ {:^54} ║", "Author: Rajendra Khope".white().dimmed());
     println!("╚{}╝", line);
     println!();
 }
