@@ -1,0 +1,19 @@
+[package]
+name = "certy"
+version = "1.0.0"
+edition = "2024"
+description = "Professional interactive CLI tool to import a custom root CA certificate into the system trust store on Windows, Linux and macOS."
+authors = ["Certy Contributors"]
+license = "MIT"
+keywords = ["ca", "certificate", "tls", "trust-store", "cli", "security"]
+categories = ["command-line-interface", "security"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+indicatif = "0.17"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true

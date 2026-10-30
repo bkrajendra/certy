@@ -1,0 +1,135 @@
+name: CI / Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+
+permissions:
+  contents: write
+
+jobs:
+  # Push to main → read version from Cargo.toml → create & push git tag v{version}
+  # The tag push re-triggers this workflow (tags: [ 'v*' ]) so build + release run.
+  tag:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep -E '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse --verify "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG"
+          else
+            echo "Tag $TAG already exists"
+          fi
+
+  # Tag push → build multi-platform binaries
+  build:
+    if: github.ref_type == 'tag'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux (static musl — runs on most distros)
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_name: certy-linux-x64
+            ext: ""
+
+          # macOS Intel
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: certy-macos-x64
+            ext: ""
+
+          # macOS Apple Silicon
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: certy-macos-arm64
+            ext: ""
+
+          # Windows 64-bit (native MSVC)
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: certy-win64
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        run: |
+          EXT="${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/certy$EXT" "certy${{ matrix.ext }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: certy${{ matrix.ext }}
+
+  # Tag push → create GitHub Release and upload all binaries
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: certy ${{ github.ref_name }}
+          body: |
+            ## certy ${{ github.ref_name }}
+
+            Multi-platform binaries:
+
+            - `certy-linux-x64` — Linux (static musl)
+            - `certy-macos-x64` — macOS Intel
+            - `certy-macos-arm64` — macOS Apple Silicon
+            - `certy-win64.exe` — Windows 64-bit
+
+            Place `ca-cert.pem` next to the binary and run `./certy` (or `certy.exe`).
+          files: dist/*
+          draft: false
+          prerelease: false
