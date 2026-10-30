@@ -69,13 +69,13 @@ jobs:
         shell: bash
         run: |
           EXT="${{ matrix.ext }}"
-          cp "target/${{ matrix.target }}/release/certy$EXT" "certy${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/certy$EXT" "${{ matrix.asset_name }}$EXT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: certy${{ matrix.ext }}
+          path: "${{ matrix.asset_name }}$EXT"
 
       # Tag + release are created once from the Linux matrix entry to avoid duplicates
       - name: Create git tag
