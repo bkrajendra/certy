@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: "${{ matrix.asset_name }}$EXT"
+          path: "${{ matrix.asset_name }}${{ matrix.ext }}"
 
       # Tag + release are created once from the Linux matrix entry to avoid duplicates
       - name: Create git tag
